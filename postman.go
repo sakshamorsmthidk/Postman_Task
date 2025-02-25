@@ -1,8 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"flag"
 	"fmt"
 	"math"
 	"os"
@@ -11,34 +9,6 @@ import (
 
 	"github.com/xuri/excelize/v2"
 )
-
-// Structs for JSON export
-type Discrepancy struct {
-	SerialNo   int     `json:"serial_no"`
-	StudentID  string  `json:"student_id"`
-	Expected   float64 `json:"expected"`
-	Calculated float64 `json:"calculated"`
-}
-
-type Averages struct {
-	ComponentAverages map[string]float64 `json:"component_averages"`
-	BranchAverages    map[string]float64 `json:"branch_averages"`
-}
-
-type Rank struct {
-	Component string `json:"component"`
-	TopRanks  []struct {
-		Rank   int     `json:"rank"`
-		Emplid string  `json:"emplid"`
-		Marks  float64 `json:"marks"`
-	} `json:"top_ranks"`
-}
-
-type ExportData struct {
-	Discrepancies []Discrepancy `json:"discrepancies"`
-	Averages      Averages      `json:"averages"`
-	Ranks         []Rank        `json:"ranks"`
-}
 
 func isEmptyRow(row []string) bool {
 	for _, cell := range row {
@@ -163,27 +133,6 @@ func top3Ranks(validRows [][]string) {
 	}
 }
 
-func exportToJSON(discrepancies []Discrepancy, averages map[string]float64, branchAverages map[string]float64, ranks []Rank, filename string) error {
-	data := ExportData{
-		Discrepancies: discrepancies,
-		Averages: Averages{
-			ComponentAverages: averages,
-			BranchAverages:    branchAverages,
-		},
-		Ranks: ranks,
-	}
-
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(data)
-}
-
 func main() {
 
 	if len(os.Args) < 2 {
@@ -192,15 +141,6 @@ func main() {
 	}
 
 	filePath := os.Args[1]
-
-	exportFlag := flag.Bool("export", false, "Export summary to JSON file")
-	outputFile := flag.String("output", "report.json", "Output JSON filename")
-	flag.Parse()
-
-	if len(flag.Args()) < 1 {
-		fmt.Println("Usage: go run main.go <file.xlsx> [--export] [--output=filename.json]")
-		return
-	}
 
 	f, err := excelize.OpenFile(filePath)
 	if err != nil {
