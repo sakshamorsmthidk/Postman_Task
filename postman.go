@@ -1,13 +1,44 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/xuri/excelize/v2"
 )
+
+// Structs for JSON export
+type Discrepancy struct {
+	SerialNo   int     `json:"serial_no"`
+	StudentID  string  `json:"student_id"`
+	Expected   float64 `json:"expected"`
+	Calculated float64 `json:"calculated"`
+}
+
+type Averages struct {
+	ComponentAverages map[string]float64 `json:"component_averages"`
+	BranchAverages    map[string]float64 `json:"branch_averages"`
+}
+
+type Rank struct {
+	Component string `json:"component"`
+	TopRanks  []struct {
+		Rank   int     `json:"rank"`
+		Emplid string  `json:"emplid"`
+		Marks  float64 `json:"marks"`
+	} `json:"top_ranks"`
+}
+
+type ExportData struct {
+	Discrepancies []Discrepancy `json:"discrepancies"`
+	Averages      Averages      `json:"averages"`
+	Ranks         []Rank        `json:"ranks"`
+}
 
 func isEmptyRow(row []string) bool {
 	for _, cell := range row {
@@ -16,6 +47,141 @@ func isEmptyRow(row []string) bool {
 		}
 	}
 	return true // All cells are empty
+}
+
+func checkDiscrepancies(validRows [][]string, tolerance float64) {
+	for i := 1; i < len(validRows); i++ {
+		sum := 0.0
+		for j := 4; j <= 9; j++ {
+			if j == 8 {
+				continue
+			}
+			value, err := strconv.ParseFloat(validRows[i][j], 64)
+			if err != nil {
+				fmt.Println("Conversion error:", err)
+				continue // Skip this cell if conversion fails
+			}
+			sum += value
+		}
+		expectedSum, err := strconv.ParseFloat(validRows[i][10], 64)
+		if err != nil {
+			fmt.Println("Conversion error:", err)
+		} else if math.Abs(sum-expectedSum) > tolerance {
+			fmt.Printf("There is a discrepancy in the sum of the student with Sl No: %d and student ID: %s\n", i, validRows[i][3])
+			validRows[i][10] = strconv.FormatFloat(sum, 'f', 2, 64)
+		}
+	}
+}
+
+func calculateAverages(validRows [][]string) {
+	for i := 4; i < 11; i++ {
+		sum := 0.0
+		average := 0.0
+		for j := 1; j < len(validRows); j++ {
+			value, err := strconv.ParseFloat(validRows[j][i], 32)
+			if err != nil {
+				fmt.Println("Conversion error:", err)
+				continue // Skip this cell if conversion fails
+			}
+			sum += value
+		}
+		average = sum / float64((len(validRows) - 1))
+		fmt.Printf("The average for %s is: %.2f\n", validRows[0][i], average)
+	}
+}
+
+func computeBranchAverages(validRows [][]string) {
+	branches := map[string]struct {
+		sum float64
+		len float64
+	}{
+		"2024A3": {0, 0},
+		"2024A4": {0, 0},
+		"2024A5": {0, 0},
+		"2024A7": {0, 0},
+		"2024A8": {0, 0},
+		"2024AA": {0, 0},
+		"2024AD": {0, 0},
+	}
+
+	for i := 1; i < len(validRows); i++ {
+		for prefix := range branches {
+			if strings.HasPrefix(validRows[i][3], prefix) {
+				value, err := strconv.ParseFloat(validRows[i][10], 64)
+				if err != nil {
+					fmt.Println("Conversion error:", err)
+					break
+				}
+				b := branches[prefix]
+				b.sum += value
+				b.len++
+				branches[prefix] = b
+				break
+			}
+		}
+	}
+
+	for prefix, data := range branches {
+		if data.len > 0 {
+			fmt.Printf("Average for branch %s: %.2f\n", prefix, data.sum/data.len)
+		}
+	}
+}
+
+func top3Ranks(validRows [][]string) {
+	var Rank_1, Rank_2, Rank_3 int
+	for i := 4; i <= 10; i++ {
+		maxMarks, secondMaxMarks, thirdMaxMarks := -1.0, -1.0, -1.0
+		Rank_1, Rank_2, Rank_3 = -1, -1, -1
+
+		for j := 1; j < len(validRows)-1; j++ {
+			marks, err := strconv.ParseFloat(validRows[j][i], 64)
+			if err != nil {
+				fmt.Println("Conversion error:", err)
+				continue // Skip this cell if conversion fails
+			}
+
+			if marks > maxMarks {
+				// Shift ranks down
+				thirdMaxMarks, Rank_3 = secondMaxMarks, Rank_2
+				secondMaxMarks, Rank_2 = maxMarks, Rank_1
+				maxMarks, Rank_1 = marks, j
+
+			} else if marks > secondMaxMarks {
+				thirdMaxMarks, Rank_3 = secondMaxMarks, Rank_2
+				secondMaxMarks, Rank_2 = marks, j
+
+			} else if marks > thirdMaxMarks {
+				thirdMaxMarks, Rank_3 = marks, j
+			}
+		}
+		fmt.Printf("\nCP %s Rankings:\n", validRows[0][i])
+		fmt.Printf("1st: Emplid: %s\tMarks: %s\n", validRows[Rank_1][2], validRows[Rank_1][i])
+		fmt.Printf("2nd: Emplid: %s\tMarks: %s\n", validRows[Rank_2][2], validRows[Rank_2][i])
+		fmt.Printf("3rd: Emplid: %s\tMarks: %s\n", validRows[Rank_3][2], validRows[Rank_3][i])
+
+	}
+}
+
+func exportToJSON(discrepancies []Discrepancy, averages map[string]float64, branchAverages map[string]float64, ranks []Rank, filename string) error {
+	data := ExportData{
+		Discrepancies: discrepancies,
+		Averages: Averages{
+			ComponentAverages: averages,
+			BranchAverages:    branchAverages,
+		},
+		Ranks: ranks,
+	}
+
+	file, err := os.Create(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(data)
 }
 
 func main() {
@@ -27,9 +193,22 @@ func main() {
 
 	filePath := os.Args[1]
 
+	exportFlag := flag.Bool("export", false, "Export summary to JSON file")
+	outputFile := flag.String("output", "report.json", "Output JSON filename")
+	flag.Parse()
+
+	if len(flag.Args()) < 1 {
+		fmt.Println("Usage: go run main.go <file.xlsx> [--export] [--output=filename.json]")
+		return
+	}
+
 	f, err := excelize.OpenFile(filePath)
 	if err != nil {
 		fmt.Println(err)
+		return
+	}
+	if !strings.HasSuffix(filePath, ".xlsx") {
+		fmt.Println("Error: Provided file is not an XLSX file.")
 		return
 	}
 	defer func() {
@@ -40,7 +219,6 @@ func main() {
 	}()
 	// Get all sheet names
 	sheets := f.GetSheetList()
-	fmt.Println("📄 Available sheets:", sheets)
 	sheetName := sheets[0]
 	// Get all the rows in the Sheet1.
 	rows, err := f.GetRows(sheetName)
@@ -54,113 +232,20 @@ func main() {
 			validRows = append(validRows, row)
 		}
 	}
-	// Checks for discrepancy within the totalling
-	for i := 1; i < len(validRows); i++ {
-		total := 0.0
-		pre_compre, err := strconv.ParseFloat(validRows[i][8], 32)
-		if err != nil {
-			fmt.Println("Conversion error:", err)
-			continue // Skip this cell if conversion fails
-		}
-		compre, err := strconv.ParseFloat(validRows[i][9], 32)
-		if err != nil {
-			fmt.Println("Conversion error:", err)
-			continue // Skip this cell if conversion fails
-		}
-		total = pre_compre + compre
-		expectedSum, err := strconv.ParseFloat(validRows[i][10], 32)
-		if err != nil {
-			fmt.Println("Conversion error:", err)
-		} else if total != expectedSum {
-			fmt.Printf("There is a discrepancy in the sum of the student with Sl No: %d and student ID: %s\n", i, validRows[i][3])
-		}
-
+	if len(validRows[0]) < 11 {
+		fmt.Println("Error: The Excel file has fewer columns than expected.")
+		return
 	}
-	// Gives average per eval component
-	for i := 4; i < 11; i++ {
-		sum := 0.0
-		average := 0.0
-		for j := 1; j < len(validRows); j++ {
-			value, err := strconv.ParseFloat(validRows[j][i], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum += value
-		}
-		average = sum / float64((len(validRows) - 1))
-		fmt.Printf("The average for %s is: %f\n", validRows[0][i], average)
-	}
+	tolerance := 1e-2
+	checkDiscrepancies(validRows, tolerance) // Checks for discrepancy within the totalling
 
-	var len_A3, sum_A3, len_A4, sum_A4, len_A5, sum_A5, len_A7, sum_A7, len_A8, sum_A8, len_AA, sum_AA, len_AD, sum_AD float64
+	fmt.Println("\nComponent-wise Averages:")
+	calculateAverages(validRows) // Calculates average per component
 
-	for i := 1; i < len(validRows); i++ {
-		switch {
+	fmt.Println("\nBranch-wise Averages:")
+	computeBranchAverages(validRows) // Calculates branch-wise average
 
-		case strings.HasPrefix(validRows[i][3], "2024A3"):
-			value, err := strconv.ParseFloat(validRows[i][10], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum_A3 += value
-			len_A3++
-		case strings.HasPrefix(validRows[i][3], "2024A4"):
-			value, err := strconv.ParseFloat(validRows[i][10], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum_A4 += value
-			len_A4++
-		case strings.HasPrefix(validRows[i][3], "2024A5"):
-			value, err := strconv.ParseFloat(validRows[i][10], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum_A5 += value
-			len_A5++
-		case strings.HasPrefix(validRows[i][3], "2024A7"):
-			value, err := strconv.ParseFloat(validRows[i][10], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum_A7 += value
-			len_A7++
-		case strings.HasPrefix(validRows[i][3], "2024A8"):
-			value, err := strconv.ParseFloat(validRows[i][10], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum_A8 += value
-			len_A8++
-		case strings.HasPrefix(validRows[i][3], "2024AA"):
-			value, err := strconv.ParseFloat(validRows[i][10], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum_AA += value
-			len_AA++
-		case strings.HasPrefix(validRows[i][3], "2024AD"):
-			value, err := strconv.ParseFloat(validRows[i][10], 32)
-			if err != nil {
-				fmt.Println("Conversion error:", err)
-				continue // Skip this cell if conversion fails
-			}
-			sum_AD += value
-			len_AD++
-		}
-	}
-	fmt.Printf("The Branch average for EEE is: %f\n", sum_A3/len_A3)
-	fmt.Printf("The Branch average for Mechanical is: %f\n", sum_A4/len_A4)
-	fmt.Printf("The Branch average for B.Pharma is: %f\n", sum_A5/len_A5)
-	fmt.Printf("The Branch average for CSE is: %f\n", sum_A7/len_A7)
-	fmt.Printf("The Branch average for ENI is: %f\n", sum_A8/len_A8)
-	fmt.Printf("The Branch average for ECE is: %f\n", sum_AA/len_AA)
-	fmt.Printf("The Branch average for MnC is: %f\n", sum_AD/len_AD)
+	fmt.Println("\nTOP 3 RANKS:")
+	top3Ranks(validRows) // Gives out top 3 ranks per component
 
 }
